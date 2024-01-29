@@ -534,7 +534,8 @@ pub fn apply_joint_user_changes(
 pub fn writeback_rigid_bodies(
     mut context: ResMut<RapierContext>,
     config: Res<RapierConfiguration>,
-    time: Res<Time<Fixed>>,
+    fixed_time: Res<Time<Fixed>>,
+    presentation_time: Res<Time<bevy::time::Real>>,
     global_transforms: Query<&GlobalTransform>,
     mut writeback: Query<
         RigidBodyWritebackComponents,
@@ -543,6 +544,9 @@ pub fn writeback_rigid_bodies(
 ) {
     let context = &mut *context;
     let scale = context.physics_scale;
+    let lerp_percentage = context
+        .interpolation
+        .get_lerp_percentage_for_frame(&fixed_time, &presentation_time);
 
     if config.physics_pipeline_active {
         for (entity, parent, transform, mut interpolation, mut velocity, mut sleeping) in
@@ -560,9 +564,7 @@ pub fn writeback_rigid_bodies(
                             interpolation.end = Some(*rb.position());
                         }
 
-                        if let Some(interpolated) =
-                            interpolation.lerp_slerp(time.overstep_percentage())
-                        {
+                        if let Some(interpolated) = interpolation.lerp_slerp(lerp_percentage) {
                             interpolated_pos = utils::iso_to_transform(&interpolated, scale);
                         }
                     }
@@ -1465,7 +1467,16 @@ pub fn update_character_controls(
                 }
             }
 
-            if let Ok(mut transform) = transforms.get_mut(entity_to_move) {
+            // NOTE: Update the translation of the Rapier's rigid body without editing the Bevy's transform for
+            //       preventing noticing change in the [`systems::apply_rigid_body_user_changes`] for kinematic bodies.
+            if let Some(body) = body_handle.and_then(|h| context.bodies.get_mut(h.0)) {
+                // TODO: Use `set_next_kinematic_translation` for position based kinematic bodies? - Vixenka 29.01.2024
+                body.set_translation(
+                    body.translation() + movement.translation * physics_scale,
+                    true,
+                );
+            } else if let Ok(mut transform) = transforms.get_mut(entity_to_move) {
+                // I do not know if this else case is still needed, but it was existing in the original code. - Vixenka 29.01.2024
                 // TODO: take the parent’s GlobalTransform rotation into account?
                 transform.translation.x += movement.translation.x * physics_scale;
                 transform.translation.y += movement.translation.y * physics_scale;

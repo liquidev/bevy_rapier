@@ -19,6 +19,8 @@ use crate::dynamics::TransformInterpolation;
 use crate::prelude::{CollisionGroups, RapierRigidBodyHandle};
 use rapier::control::CharacterAutostep;
 
+use super::interpolation_context::RapierInterpolationContext;
+
 /// The Rapier context, containing all the state of the physics engine.
 #[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
 #[derive(Resource)]
@@ -49,6 +51,7 @@ pub struct RapierContext {
     /// The integration parameters, controlling various low-level coefficient of the simulation.
     pub integration_parameters: IntegrationParameters,
     pub(crate) physics_scale: Real,
+    pub(crate) interpolation: RapierInterpolationContext,
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
     pub(crate) event_handler: Option<Box<dyn EventHandler>>,
     // For transform change detection.
@@ -86,6 +89,7 @@ impl Default for RapierContext {
             query_pipeline: QueryPipeline::new(),
             integration_parameters: IntegrationParameters::default(),
             physics_scale: 1.0,
+            interpolation: RapierInterpolationContext::default(),
             event_handler: None,
             last_body_transform_set: HashMap::new(),
             entity2body: HashMap::new(),
@@ -227,13 +231,6 @@ impl RapierContext {
 
         self.integration_parameters.dt = delta_time;
 
-        for (handle, mut interpolation) in interpolation_query.iter_mut() {
-            if let Some(body) = self.bodies.get(handle.0) {
-                interpolation.start = interpolation.end;
-                interpolation.end = Some(*body.position());
-            }
-        }
-
         let mut substep_integration_parameters = self.integration_parameters;
         substep_integration_parameters.dt = delta_time / substeps as Real;
 
@@ -254,6 +251,18 @@ impl RapierContext {
                 events,
             );
         }
+
+        // NOTE: Update the interpolation data must be after all substeps.
+        for (handle, mut interpolation) in interpolation_query.iter_mut() {
+            if let Some(body) = self.bodies.get(handle.0) {
+                if self.interpolation.is_after_update() {
+                    interpolation.start = interpolation.end;
+                }
+                interpolation.end = Some(*body.position());
+            }
+        }
+
+        self.interpolation.notice_fixed_update_frame();
     }
 
     /// This method makes sure tha the rigid-body positions have been propagated to
