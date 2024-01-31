@@ -279,7 +279,6 @@ pub fn apply_rigid_body_user_changes(
             &RapierRigidBodyHandle,
             &GlobalTransform,
             Option<&mut TransformInterpolation>,
-            Option<&KinematicCharacterController>,
         ),
         Changed<GlobalTransform>,
     >,
@@ -354,30 +353,24 @@ pub fn apply_rigid_body_user_changes(
             }
         };
 
-    for (handle, global_transform, mut interpolation, kinematic_character_controller) in
-        changed_transforms.iter_mut()
-    {
+    for (handle, global_transform, mut interpolation) in changed_transforms.iter_mut() {
         // Use an Option<bool> to avoid running the check twice.
         let mut transform_changed = None;
 
-        // Kinematic character controllers update outside of our tick loop, and therefore we must
-        // exclude them from interpolation.
-        if kinematic_character_controller.is_none() {
-            if let Some(interpolation) = interpolation.as_deref_mut() {
-                transform_changed = transform_changed.or_else(|| {
-                    Some(transform_changed_fn(
-                        &handle.0,
-                        global_transform,
-                        &context.last_body_transform_set,
-                    ))
-                });
+        if let Some(interpolation) = interpolation.as_deref_mut() {
+            transform_changed = transform_changed.or_else(|| {
+                Some(transform_changed_fn(
+                    &handle.0,
+                    global_transform,
+                    &context.last_body_transform_set,
+                ))
+            });
 
-                if transform_changed == Some(true) {
-                    // Reset the interpolation so we don’t overwrite
-                    // the user’s input.
-                    interpolation.start = None;
-                    interpolation.end = None;
-                }
+            if transform_changed == Some(true) {
+                // Reset the interpolation so we don’t overwrite
+                // the user’s input.
+                interpolation.start = None;
+                interpolation.end = None;
             }
         }
 
@@ -535,7 +528,6 @@ pub fn writeback_rigid_bodies(
     mut context: ResMut<RapierContext>,
     config: Res<RapierConfiguration>,
     fixed_time: Res<Time<Fixed>>,
-    presentation_time: Res<Time<bevy::time::Real>>,
     global_transforms: Query<&GlobalTransform>,
     mut writeback: Query<
         RigidBodyWritebackComponents,
@@ -544,9 +536,7 @@ pub fn writeback_rigid_bodies(
 ) {
     let context = &mut *context;
     let scale = context.physics_scale;
-    let lerp_percentage = context
-        .interpolation
-        .get_lerp_percentage_for_frame(&fixed_time, &presentation_time);
+    let lerp_percentage = fixed_time.overstep_percentage();
 
     if config.physics_pipeline_active {
         for (entity, parent, transform, mut interpolation, mut velocity, mut sleeping) in
@@ -560,10 +550,6 @@ pub fn writeback_rigid_bodies(
                     let mut interpolated_pos = utils::iso_to_transform(rb.position(), scale);
 
                     if let Some(interpolation) = interpolation.as_deref_mut() {
-                        if interpolation.end.is_none() {
-                            interpolation.end = Some(*rb.position());
-                        }
-
                         if let Some(interpolated) = interpolation.lerp_slerp(lerp_percentage) {
                             interpolated_pos = utils::iso_to_transform(&interpolated, scale);
                         }
@@ -714,7 +700,7 @@ pub fn step_simulation<Hooks>(
     mut context: ResMut<RapierContext>,
     config: Res<RapierConfiguration>,
     hooks: StaticSystemParam<Hooks>,
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     collision_events: EventWriter<CollisionEvent>,
     contact_force_events: EventWriter<ContactForceEvent>,
     interpolation_query: Query<(&RapierRigidBodyHandle, &mut TransformInterpolation)>,
@@ -1531,7 +1517,10 @@ mod tests {
     use std::f32::consts::PI;
 
     use super::*;
-    use crate::plugin::{NoUserData, RapierPhysicsPlugin};
+    use crate::{
+        plugin::{NoUserData, RapierPhysicsPlugin},
+        utils::testing,
+    };
 
     #[test]
     fn colliding_entities_updates() {
@@ -1731,7 +1720,7 @@ mod tests {
                 .spawn(TransformBundle::from(parent_transform))
                 .push_children(&[child]);
 
-            app.update();
+            testing::step_fixed_update(&mut app);
 
             let child_transform = app.world.entity(child).get::<GlobalTransform>().unwrap();
             let context = app.world.resource::<RapierContext>();
@@ -1789,7 +1778,7 @@ mod tests {
                 .push_children(&[child])
                 .id();
 
-            app.update();
+            testing::step_fixed_update(&mut app);
 
             let child_transform = app
                 .world
@@ -1835,7 +1824,7 @@ mod tests {
             app.add_plugins((
                 WindowPlugin::default(),
                 AssetPlugin::default(),
-                ScenePlugin::default(),
+                ScenePlugin,
                 RenderPlugin {
                     render_creation: RenderCreation::Automatic(WgpuSettings {
                         backends: None,
